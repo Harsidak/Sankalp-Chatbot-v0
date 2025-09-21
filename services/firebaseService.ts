@@ -39,6 +39,7 @@ import type { AuthUser, ChatSession, DashboardAnalytics, WellnessPlan, Theme } f
 const firebaseConfig = {
   apiKey: "AIzaSyBwk0qfqC8cpEc2F8lx053nM5SvVQXkaTc",
   authDomain: "sahaara-chat-bot.firebaseapp.com",
+  databaseURL: "https://sahaara-chat-bot-default-rtdb.firebaseio.com",
   projectId: "sahaara-chat-bot",
   storageBucket: "sahaara-chat-bot.firebasestorage.app",
   messagingSenderId: "756307450344",
