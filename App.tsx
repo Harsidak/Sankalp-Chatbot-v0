@@ -16,6 +16,7 @@ import {
     clearAllChatHistory,
     getDashboardData,
     saveDashboardData,
+    subscribeToDashboardData,
     getUserProfile,
     saveUserProfile,
     linkAnonymousAccountWithGoogle,
@@ -89,6 +90,8 @@ const AppContent: React.FC = () => {
         unsubscribers.push(unsubChallenges);
         const unsubLb = subscribeToLeaderboard(10, (entries) => setLeaderboard(entries));
         unsubscribers.push(unsubLb);
+        const unsubDash = subscribeToDashboardData(authUser.uid, (d) => setDashboardData(d));
+        unsubscribers.push(unsubDash);
 
         return () => { unsubscribers.forEach(u => u && u()); };
     } else {

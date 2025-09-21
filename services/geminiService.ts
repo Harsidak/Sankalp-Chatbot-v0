@@ -58,10 +58,9 @@ export async function setFirebaseVertexModel(firebaseApp: FirebaseApp, options?:
 
   let vertexModule: any;
   try {
-    // Use a computed module specifier to avoid Vite/esbuild static dependency scanning.
-  const modName = 'firebase' + '/vertexai';
-  // Using a computed string prevents the bundler from trying to resolve the subpath at build time.
-  vertexModule = await import(modName);
+    // Use runtime dynamic import via Function constructor to avoid bundler analysis entirely.
+    const importer: (s: string) => Promise<any> = (new Function('s', 'return import(s)')) as any;
+    vertexModule = await importer('firebase/vertexai');
   } catch (err) {
     console.error('Dynamic import of firebase/vertexai failed. Move Vertex AI calls to server-side.');
     throw err;

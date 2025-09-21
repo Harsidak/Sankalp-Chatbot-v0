@@ -9,7 +9,7 @@ if (!rootElement) {
   throw new Error("Could not find root element to mount to");
 }
 
-// Initialize Vertex AI model with your endpoint at startup
+// Initialize Vertex AI model with your endpoint at startup, then mount the app
 (async () => {
   try {
     const env = (import.meta as any)?.env || {};
@@ -24,11 +24,12 @@ if (!rootElement) {
     // If dynamic import fails in the browser, the chat will fall back to a mock response.
     console.warn('Vertex model initialization failed. The app will use mock AI until configured.', e);
   }
+
+  const root = ReactDOM.createRoot(rootElement);
+  root.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
 })();
 
-const root = ReactDOM.createRoot(rootElement);
-root.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>
-);

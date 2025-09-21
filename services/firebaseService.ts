@@ -145,6 +145,17 @@ export const getDashboardData = async (uid: string): Promise<DashboardData | nul
     return docSnap.exists() ? docSnap.data() as DashboardData : null;
 };
 
+// Live subscription to dashboard doc so analytics/plan stay in sync across devices
+export const subscribeToDashboardData = (
+    uid: string,
+    cb: (data: DashboardData | null) => void
+) => {
+    const dashboardRef = doc(db, 'users', uid, 'data', 'dashboard');
+    return onSnapshot(dashboardRef, (snap) => {
+        cb(snap.exists() ? (snap.data() as DashboardData) : null);
+    });
+};
+
 // ------------------------------
 // New: Engagement, Tracking, Analytics
 // ------------------------------
