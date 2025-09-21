@@ -194,7 +194,7 @@ const ChatView: React.FC<ChatViewProps> = ({ session, onUpdateSession, onGoBack,
       chatRef.current = createChat(selections.language, messages);
     } catch (e) {
       console.error('Failed to initialize chat client:', e);
-      addNotification('AI service is initializing. If this persists, please check your Vertex AI model configuration.', 'error');
+      addNotification('AI service is not configured. Please set VITE_GEMINI_API_KEY and reload.', 'error');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session.id]);

@@ -18,7 +18,6 @@ async function handleGenerate(prompt: string, model?: string, location?: string)
   const mdl = model || DEFAULT_MODEL;
   const loc = location || LOCATION;
   const token = await auth.getAccessToken();
-  const url = `https://${loc}-aiplatform.googleapis.com/v1/${mdl}:generateContent`;
 
   const body = {
     contents: [
@@ -33,7 +32,9 @@ async function handleGenerate(prompt: string, model?: string, location?: string)
     ]
   };
 
-  const resp = await fetch(url, {
+  // First try Vertex AI (aiplatform)
+  const urlA = `https://${loc}-aiplatform.googleapis.com/v1/${mdl}:generateContent`;
+  let resp = await fetch(urlA, {
     method: 'POST',
     headers: {
       'Authorization': `Bearer ${token}`,
@@ -42,11 +43,27 @@ async function handleGenerate(prompt: string, model?: string, location?: string)
     },
     body: JSON.stringify(body)
   });
+
+  // If that fails (e.g., API not enabled for this path), try firebasevertexai endpoint
+  if (!resp.ok) {
+    const urlB = `https://firebasevertexai.googleapis.com/v1beta/projects/${PROJECT}/models/${encodeURIComponent(mdl)}:generateContent`;
+    resp = await fetch(urlB, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+        'x-goog-user-project': PROJECT,
+      },
+      body: JSON.stringify(body)
+    });
+  }
+
   if (!resp.ok) {
     const errTxt = await resp.text();
     throw new Error(`Vertex returned ${resp.status}: ${errTxt}`);
   }
-  const data = await resp.json();
+
+  const data = await resp.json().catch(() => ({}));
   // Try to extract text from typical generative response shapes
   let text = '';
   try {

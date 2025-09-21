@@ -39,7 +39,6 @@ import type { AuthUser, ChatSession, DashboardAnalytics, WellnessPlan, Theme } f
 const firebaseConfig = {
   apiKey: "AIzaSyBwk0qfqC8cpEc2F8lx053nM5SvVQXkaTc",
   authDomain: "sahaara-chat-bot.firebaseapp.com",
-  databaseURL: "https://sahaara-chat-bot-default-rtdb.firebaseio.com",
   projectId: "sahaara-chat-bot",
   storageBucket: "sahaara-chat-bot.firebasestorage.app",
   messagingSenderId: "756307450344",
@@ -47,7 +46,7 @@ const firebaseConfig = {
   measurementId: "G-RCY3SNBR16"
 };
 
-export const app: FirebaseApp = initializeApp(firebaseConfig);
+const app: FirebaseApp = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 // Initialize Firestore with persistent local cache (works offline and syncs when online)
 const db = initializeFirestore(app, {
@@ -143,17 +142,6 @@ export const getDashboardData = async (uid: string): Promise<DashboardData | nul
     const dashboardRef = doc(db, 'users', uid, 'data', 'dashboard');
     const docSnap = await getDoc(dashboardRef);
     return docSnap.exists() ? docSnap.data() as DashboardData : null;
-};
-
-// Live subscription to dashboard doc so analytics/plan stay in sync across devices
-export const subscribeToDashboardData = (
-    uid: string,
-    cb: (data: DashboardData | null) => void
-) => {
-    const dashboardRef = doc(db, 'users', uid, 'data', 'dashboard');
-    return onSnapshot(dashboardRef, (snap) => {
-        cb(snap.exists() ? (snap.data() as DashboardData) : null);
-    });
 };
 
 // ------------------------------

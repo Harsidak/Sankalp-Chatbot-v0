@@ -12,15 +12,6 @@ export default defineConfig(({ mode }) => {
         alias: {
           '@': path.resolve(__dirname, '.'),
         }
-      },
-      server: {
-        proxy: {
-          '/api': {
-            target: 'http://localhost:8787',
-            changeOrigin: true,
-            secure: false,
-          },
-        },
-      },
+      }
     };
 });
