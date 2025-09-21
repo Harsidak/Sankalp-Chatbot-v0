@@ -47,7 +47,7 @@ const firebaseConfig = {
   measurementId: "G-RCY3SNBR16"
 };
 
-const app: FirebaseApp = initializeApp(firebaseConfig);
+export const app: FirebaseApp = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 // Initialize Firestore with persistent local cache (works offline and syncs when online)
 const db = initializeFirestore(app, {

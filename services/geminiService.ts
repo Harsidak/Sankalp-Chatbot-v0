@@ -22,7 +22,6 @@
 // Unified AI client that supports either GoogleGenAI (Gemini) via API key
 // or Firebase Vertex AI GenerativeModel (deployed tuned model endpoint).
 
-import { GoogleGenAI } from '@google/genai';
 import type { UserSelections, ChatMessage, ChatSession, WellnessPlan, DashboardAnalytics } from '../types';
 import { MessageAuthor } from '../types';
 import { LANGUAGES, EMOTIONS } from '../constants';
@@ -33,13 +32,10 @@ import type { FirebaseApp } from 'firebase/app';
 // the './vertexai' subpath for ESM bundlers. To avoid Vite import-analysis failures we load
 // the Vertex client dynamically at runtime inside setFirebaseVertexModel (server or secure env).
 
-let aiClient: GoogleGenAI | null = null;
 let vertexModel: any = null; // runtime-loaded
 let vertexLocation = 'us-central1';
-let vertexModelResource = process.env.VITE_VERTEX_MODEL_ENDPOINT || '';
-
-// Runtime-injected Gemini API key (preferred: set via server-side initialization)
-let runtimeGeminiApiKey: string | undefined = undefined;
+// Default to env if provided, otherwise use your provided endpoint path (no secrets embedded)
+let vertexModelResource = (import.meta as any)?.env?.VITE_VERTEX_MODEL_ENDPOINT || process.env.VITE_VERTEX_MODEL_ENDPOINT || "projects/756307450344/locations/us-central1/endpoints/1417678407017168896";
 
 /**
  * Inject a Gemini / GoogleGenAI API key at runtime.
@@ -47,11 +43,6 @@ let runtimeGeminiApiKey: string | undefined = undefined;
  * raw keys in client-side source. Example:
  *   setGeminiApiKey(process.env.VITE_GEMINI_API_KEY);
  */
-export function setGeminiApiKey(apiKey: string) {
-  runtimeGeminiApiKey = apiKey;
-  // If a client already exists, recreate it with the new key.
-  aiClient = new (GoogleGenAI as any)({ apiKey });
-}
 
 /**
  * Configure and initialize the Vertex AI GenerativeModel at runtime.
@@ -98,18 +89,6 @@ export async function setFirebaseVertexModel(firebaseApp: FirebaseApp, options?:
   });
 }
 
-// --- Private helper to get GoogleGenAI client ---
-const getAiClient = (): GoogleGenAI => {
-  if (aiClient) return aiClient;
-  const env = (import.meta as any).env || {};
-  const apiKeyFromEnv = (env.VITE_GEMINI_API_KEY || env.VITE_GOOGLE_API_KEY || env.GOOGLE_API_KEY) as string | undefined;
-  const apiKey = runtimeGeminiApiKey || apiKeyFromEnv;
-  if (!apiKey) {
-    throw new Error('Missing Gemini API key. Call setGeminiApiKey(apiKey) during app initialization or set VITE_GEMINI_API_KEY in your environment.');
-  }
-  aiClient = new GoogleGenAI({ apiKey });
-  return aiClient;
-};
 
 // Unified response text reader
 const getResponseText = async (response: any): Promise<string> => {
@@ -172,29 +151,14 @@ const mapMessagesToContent = (messages: ChatMessage[]): Array<string> => {
   return messages.map(message => `${message.author === MessageAuthor.USER ? 'User' : 'Assistant'}: ${message.text}`);
 };
 
-// Unified generator function: supports Vertex model (if set) or GoogleGenAI.
-async function generateContentUnified(prompt: string, options?: { languageName?: string; modelOverride?: string; config?: any; responseSchema?: any }): Promise<string> {
-  // Vertex model path
-  if (vertexModel) {
-    const result = await vertexModel.generateContent(prompt);
-    const text = await getResponseText(result);
-    return text;
+// Unified generator function: requires Vertex model configuration
+async function generateContentUnified(prompt: string, options?: { languageName?: string; config?: any; responseSchema?: any }): Promise<string> {
+  if (!vertexModel) {
+    throw new Error('Vertex model not configured. Ensure setFirebaseVertexModel(firebaseApp, options) is called during app startup.');
   }
-
-  // GoogleGenAI path
-  try {
-    const ai = getAiClient();
-    const contents = [{ role: 'user', parts: [{ text: prompt }] }];
-    const genPayload: any = { model: options?.modelOverride || 'gemini-2.5-flash', contents };
-    if (options?.config) genPayload.config = options.config;
-    if (options?.responseSchema) genPayload.config = { ...(genPayload.config || {}), responseSchema: options.responseSchema };
-    const response = await (ai as any).models.generateContent(genPayload);
-    const text = await getResponseText(response);
-    return text;
-  } catch (err) {
-    console.error('generateContentUnified error:', err);
-    throw err;
-  }
+  const result = await vertexModel.generateContent(prompt);
+  const text = await getResponseText(result);
+  return text;
 }
 
 // --- Public API functions (same names as original module) ---
@@ -205,8 +169,7 @@ export const createChat = (languageCode: string, history: ChatMessage[] = []): a
   const historyCopy = JSON.parse(JSON.stringify(history));
 
   // If no AI configured, return mock
-  const env = (import.meta as any).env || {};
-  if (!vertexModel && !runtimeGeminiApiKey && !env?.VITE_GEMINI_API_KEY && !env?.VITE_GOOGLE_API_KEY) {
+  if (!vertexModel) {
     const mockChat: any = {
       __isMock: true,
       async *sendMessageStream({ message }: { message: string }) {
@@ -366,6 +329,5 @@ export default {
   generateWellnessPlan,
   generateDashboardAnalytics,
   setFirebaseVertexModel,
-  setGeminiApiKey,
   callVertexRaw,
 };
