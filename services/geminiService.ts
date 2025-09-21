@@ -25,11 +25,13 @@ import type { UserSelections, ChatMessage, ChatSession, WellnessPlan, DashboardA
 import { MessageAuthor } from '../types';
 import { LANGUAGES, EMOTIONS } from '../constants';
 import type { FirebaseApp } from 'firebase/app';
-
-let vertexModel: any = null; // runtime-loaded
+import { getAI, getGenerativeModel, VertexAIBackend, HarmBlockThreshold, HarmCategory } from "firebase/ai";
+import type { GenerativeModel } from "firebase/ai";
+let vertexModel: GenerativeModel | null = null; // runtime-loaded
 let vertexLocation = 'us-central1';
-// Default to env if provided, otherwise use your provided endpoint path (no secrets embedded)
-let vertexModelResource = (import.meta as any)?.env?.VITE_VERTEX_MODEL_ENDPOINT || process.env.VITE_VERTEX_MODEL_ENDPOINT || "projects/756307450344/locations/us-central1/endpoints/1417678407017168896";
+// Hardcoded tuned endpoint as requested (do not read from env)
+let vertexModelResource = "projects/756307450344/locations/us-central1/endpoints/1417678407017168896";
+let serverFallback = true; // enable server fallback by default due to browser CORS limitations with Vertex
 
 /**
  * Inject a Gemini / GoogleGenAI API key at runtime.
@@ -50,22 +52,6 @@ export async function setFirebaseVertexModel(firebaseApp: FirebaseApp, options?:
     throw new Error('Missing Vertex model endpoint resource. Provide modelEndpoint or set VITE_VERTEX_MODEL_ENDPOINT.');
   }
 
-  // Load Vertex AI Web SDK from CDN to avoid Vite subpath resolution issues
-  let getVertexAI: any, getGenerativeModel: any, HarmBlockThreshold: any, HarmCategory: any;
-  try {
-    const importer: (s: string) => Promise<any> = (new Function('s', 'return import(s)')) as any;
-    let mod: any;
-    try {
-      mod = await importer('https://cdn.jsdelivr.net/npm/firebase@12.3.0/vertexai/dist/index.esm.js');
-    } catch (_) {
-      mod = await importer('https://unpkg.com/firebase@12.3.0/vertexai/dist/index.esm.js');
-    }
-    ({ getVertexAI, getGenerativeModel, HarmBlockThreshold, HarmCategory } = mod);
-  } catch (err) {
-    console.error('Dynamic import of firebase VertexAI SDK failed. Move Vertex AI calls to server-side.', err);
-    throw err;
-  }
-
   const generationConfig = options?.generationConfig || {
     temperature: 1,
     topP: 0.95,
@@ -78,11 +64,14 @@ export async function setFirebaseVertexModel(firebaseApp: FirebaseApp, options?:
     { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.OFF },
   ];
 
-  const vertexAI = getVertexAI(firebaseApp, { location: vertexLocation });
-  vertexModel = getGenerativeModel(vertexAI, {
+  // Use Firebase AI with Vertex backend
+  const ai = getAI(firebaseApp);
+  const backend = new VertexAIBackend({ location: vertexLocation });
+  vertexModel = getGenerativeModel(ai, {
     model: vertexModelResource,
     generationConfig,
     safetySettings,
+    backend,
   });
   try { console.info('[VertexAI] Model configured:', vertexModelResource, 'location:', vertexLocation); } catch {}
 }
@@ -99,7 +88,7 @@ const getResponseText = async (response: any): Promise<string> => {
     if (typeof response?.text === 'string') return response.text;
     if (typeof response === 'string') return response;
   } catch (e) {
-    // swallow
+    console.warn('getResponseText error:', e);
   }
   return '';
 };
@@ -149,15 +138,59 @@ const mapMessagesToContent = (messages: ChatMessage[]): Array<string> => {
   return messages.map(message => `${message.author === MessageAuthor.USER ? 'User' : 'Assistant'}: ${message.text}`);
 };
 
+// Extract a JSON object from a string (first balanced {...})
+const extractJsonObject = (text: string): string | null => {
+  if (!text) return null;
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end === -1 || end <= start) return null;
+  // naive trim; optionally balance braces here if needed
+  return text.slice(start, end + 1);
+};
+
+// Shared server fallback fetch
+const fetchFromServer = async (prompt: string, modelResource: string, location: string): Promise<string> => {
+  try {
+    const resp = await fetch('/api/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, model: modelResource, location })
+    });
+    if (!resp.ok) {
+      console.warn('Server /api/generate non-OK:', resp.status);
+      return '';
+    }
+    const data = await resp.json().catch(() => ({} as any));
+    return (data && (data.text || data.output || data.responseText)) || '';
+  } catch (e) {
+    console.error('Server fallback /api/generate failed:', e);
+    return '';
+  }
+};
+
 // Unified generator function: requires Vertex model configuration
 async function generateContentUnified(prompt: string, options?: { languageName?: string; config?: any; responseSchema?: any }): Promise<string> {
+  // Prefer server fallback first in browser environments to avoid CORS issues with direct Vertex calls
+  if (serverFallback) {
+    const out = await fetchFromServer(prompt, vertexModelResource, vertexLocation);
+    if (out) return out;
+  }
+
   if (!vertexModel) {
     throw new Error('Vertex model not configured. Ensure setFirebaseVertexModel(firebaseApp, options) is called during app startup.');
   }
-  // Send as array of parts (text) for maximum compatibility with Vertex content API
-  const result = await vertexModel.generateContent([prompt]);
-  const text = await getResponseText(result);
-  return text;
+
+  try {
+    // Send as array of parts objects for maximum compatibility with Vertex content API
+    const result = await vertexModel.generateContent([{ text: prompt }]);
+    const text = await getResponseText(result);
+    return text;
+  } catch (e) {
+    console.error('Client Vertex call failed, attempting server fallback...', e);
+    const out = await fetchFromServer(prompt, vertexModelResource, vertexLocation);
+    if (out) return out;
+    throw e;
+  }
 }
 
 // --- Public API functions (same names as original module) ---
@@ -187,11 +220,20 @@ export const createChat = (languageCode: string, history: ChatMessage[] = []): a
       const prompt = `${getSystemInstruction(languageName)}\nConversation history:\n${promptParts}User: ${message}\nRespond in ${languageName}.`;
 
       try {
-        const fullText = await generateContentUnified(prompt, { languageName });
-        // mimic partial streaming: emit half then full
-        const half = fullText.slice(0, Math.ceil(fullText.length / 2));
-        yield { text: half };
-        yield { text: fullText };
+        const fullText = (await generateContentUnified(prompt, { languageName })) || '';
+        const total = fullText.length;
+        if (total === 0) {
+          yield { text: '...' };
+          return;
+        }
+        // Emit in small chunks to simulate streaming without server streaming support
+        const chunks = Math.min(12, Math.max(4, Math.ceil(total / 80))); // 4..12 chunks, ~80 chars each
+        const step = Math.ceil(total / chunks);
+        for (let i = 0; i < total; i += step) {
+          const piece = fullText.slice(i, Math.min(total, i + step));
+          if (piece) yield { text: piece };
+          await new Promise(r => setTimeout(r, 30));
+        }
       } catch (err) {
         const fallback = `I’m here to listen. (Fallback response in ${languageName})`;
         yield { text: fallback };
@@ -232,7 +274,7 @@ export const generateChatTitle = async (session: ChatSession): Promise<string> =
   }
 
   const languageName = LANGUAGES.find(l => l.code === session.selections.language)?.name || 'English';
-  const conversation = session.messages.map(m => `${m.author}: ${m.text}`).join('');
+  const conversation = session.messages.map(m => `${m.author}: ${m.text}`).join('\n');
   const prompt = `Based on the following conversation start, create a very short, concise title (4-5 words max) in ${languageName} that captures the main theme. Do not use quotes or special characters.
 
 Conversation:
@@ -253,11 +295,21 @@ ${conversation}`;
   }
 };
 
-export const generateWellnessPlan = async (languageCode: string): Promise<WellnessPlan> => {
+export const generateWellnessPlan = async (
+  languageCode: string,
+  userData?: Partial<{ name: string; emotion: string; issues: string; preferences: string; time: string; streaks: string }>
+): Promise<WellnessPlan> => {
   const languageName = LANGUAGES.find(l => l.code === languageCode)?.name || 'English';
-  const userContext = { name: 'Alex', emotion: 'negative', issues: 'stress, sleep issues', preferences: 'meditation, journaling', time: '30 minutes', streaks: '2 days' };
+  const ctx = {
+    name: userData?.name || 'Friend',
+    emotion: userData?.emotion || 'mixed',
+    issues: userData?.issues || 'stress, sleep issues',
+    preferences: userData?.preferences || 'meditation, journaling',
+    time: userData?.time || '30 minutes',
+    streaks: userData?.streaks || '2 days',
+  };
   const prompt = `You are an expert wellness coach. Create a personalized, gamified self-care plan for the user.
-User: Name: ${userContext.name}, Emotional state: ${userContext.emotion}, Issues: ${userContext.issues}, Preferences: ${userContext.preferences}, Time: ${userContext.time}, Streak: ${userContext.streaks}.
+User: Name: ${ctx.name}, Emotional state: ${ctx.emotion}, Issues: ${ctx.issues}, Preferences: ${ctx.preferences}, Time: ${ctx.time}, Streak: ${ctx.streaks}.
 Tasks:
 1. Create a single, realistic **daily challenge**.
 2. Suggest a **reward** for it (type: 'points', 'badge', or 'milestone').
@@ -280,20 +332,25 @@ Return ONLY the specified JSON. All text in the response must be in ${languageNa
 
   try {
     const text = await generateContentUnified(prompt, { languageName, responseSchema: wellnessPlanSchema });
-    const jsonText = text.trim();
-    return JSON.parse(jsonText) as WellnessPlan;
+    const jsonMaybe = extractJsonObject(text.trim()) || text.trim();
+    return JSON.parse(jsonMaybe) as WellnessPlan;
   } catch (error) {
     console.error('Error generating wellness plan:', error);
     throw new Error('Failed to generate wellness plan from AI API.');
   }
 };
 
-export const generateDashboardAnalytics = async (languageCode: string): Promise<DashboardAnalytics> => {
+export const generateDashboardAnalytics = async (
+  languageCode: string,
+  userData?: Partial<{ name: string; focus: string }>
+): Promise<DashboardAnalytics> => {
   const languageName = LANGUAGES.find(l => l.code === languageCode)?.name || 'English';
-  const prompt = `You are a data synthesizer for a wellness app. Generate a realistic but mock analytics summary for a user.
+  const uname = userData?.name || 'Friend';
+  const focus = userData?.focus || 'well-being and consistency';
+  const prompt = `You are a data synthesizer for a wellness app. Generate a realistic but mock analytics summary for a user named ${uname} focusing on ${focus}.
 Your Tasks:
 1.  **keyMetrics**: Create an object with 'currentStreak' (number between 2-10) and 'challengesCompleted' (number between 5-20).
-2.  **moodTrend**: Create an array of 7 objects. Each object should have a 'day' (e.g., "Mon", "Tue") and a 'moodScore' (a number between 1 and 10, showing some variation).
+2.  **moodTrend**: Create an array of 7 objects. Each object should have a 'day' (e.g., \"Mon\", \"Tue\") and a 'moodScore' (a number between 1 and 10, showing some variation).
 3.  **emotionBreakdown**: Create an array of 3-4 objects. Each object should have an 'emotion', a 'percentage' (all percentages must sum to 100), and a 'color' (a hex code like '#8B5CF6').
 4.  **activityLog**: Create an array of 2-3 recent activity objects. Each should have a 'date' and an 'activity'.
 
@@ -306,8 +363,8 @@ Return ONLY the specified JSON. All text fields (emotion, date, activity) must b
 
   try {
     const text = await generateContentUnified(prompt, { languageName, responseSchema: analyticsSchema });
-    const jsonText = text.trim();
-    return JSON.parse(jsonText) as DashboardAnalytics;
+    const jsonMaybe = extractJsonObject(text.trim()) || text.trim();
+    return JSON.parse(jsonMaybe) as DashboardAnalytics;
   } catch (error) {
     console.error('Error generating dashboard analytics:', error);
     throw new Error('Failed to generate dashboard analytics from AI API.');
@@ -317,7 +374,32 @@ Return ONLY the specified JSON. All text fields (emotion, date, activity) must b
 // Example helper: call vertexModel directly (raw) if needed
 export async function callVertexRaw(content: string | Array<any>) {
   if (!vertexModel) throw new Error('Vertex model not configured. Call setFirebaseVertexModel(firebaseApp, options) first.');
-  return await vertexModel.generateContent(content as any);
+  return await vertexModel.generateContent(
+    Array.isArray(content) ? content : [{ text: String(content) }]
+  );
+}
+
+// Debug/demo helper matching the user-provided snippet
+export async function demoGenerateContent(firebaseApp: FirebaseApp) {
+  const generationConfig = { temperature: 1, topP: 0.95, maxOutputTokens: 65535 };
+  const safetySettings = [
+    { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.OFF },
+    { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.OFF },
+    { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.OFF },
+    { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.OFF },
+  ];
+  const ai = getAI(firebaseApp);
+  const backend = new VertexAIBackend({ location: 'us-central1' });
+  const model = getGenerativeModel(ai, {
+    model: vertexModelResource,
+    generationConfig,
+    safetySettings,
+    backend,
+  });
+  const result = await model.generateContent([{ text: 'Tell me a fun fact about the human brain.' }]);
+  const text = await (result?.response?.text?.() ?? Promise.resolve(''));
+  try { console.info('[VertexAI][demo] response:', text); } catch {}
+  return text;
 }
 
 // Exported for backwards compatibility
@@ -329,5 +411,6 @@ export default {
   generateDashboardAnalytics,
   setFirebaseVertexModel,
   callVertexRaw,
+  demoGenerateContent,
 };
 
