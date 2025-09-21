@@ -60,7 +60,7 @@ export async function setFirebaseVertexModel(firebaseApp: FirebaseApp, options?:
   try {
     // Use runtime dynamic import via Function constructor to avoid bundler analysis entirely.
     const importer: (s: string) => Promise<any> = (new Function('s', 'return import(s)')) as any;
-    vertexModule = await importer('firebase/vertexai');
+    vertexModule = await importer('firebase/compat/vertexai');
   } catch (err) {
     console.error('Dynamic import of firebase/vertexai failed. Move Vertex AI calls to server-side.');
     throw err;
