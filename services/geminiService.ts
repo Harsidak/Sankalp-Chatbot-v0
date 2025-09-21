@@ -1,4 +1,3 @@
-
 // integrated_ai_client.ts
 // Unified AI client that supports either GoogleGenAI (Gemini) via API key
 // or Firebase Vertex AI GenerativeModel (deployed tuned model endpoint).
@@ -27,11 +26,6 @@ import { MessageAuthor } from '../types';
 import { LANGUAGES, EMOTIONS } from '../constants';
 import type { FirebaseApp } from 'firebase/app';
 
-// NOTE: Do NOT statically import 'firebase/vertexai' in a browser-bundled frontend (Vite).
-// The "Missing \"./vertexai\" specifier" error occurs because 'firebase' package does not export
-// the './vertexai' subpath for ESM bundlers. To avoid Vite import-analysis failures we load
-// the Vertex client dynamically at runtime inside setFirebaseVertexModel (server or secure env).
-
 let vertexModel: any = null; // runtime-loaded
 let vertexLocation = 'us-central1';
 // Default to env if provided, otherwise use your provided endpoint path (no secrets embedded)
@@ -56,17 +50,21 @@ export async function setFirebaseVertexModel(firebaseApp: FirebaseApp, options?:
     throw new Error('Missing Vertex model endpoint resource. Provide modelEndpoint or set VITE_VERTEX_MODEL_ENDPOINT.');
   }
 
-  let vertexModule: any;
+  // Load Vertex AI Web SDK from CDN to avoid Vite subpath resolution issues
+  let getVertexAI: any, getGenerativeModel: any, HarmBlockThreshold: any, HarmCategory: any;
   try {
-    // Use runtime dynamic import via Function constructor to avoid bundler analysis entirely.
     const importer: (s: string) => Promise<any> = (new Function('s', 'return import(s)')) as any;
-    vertexModule = await importer('firebase/compat/vertexai');
+    let mod: any;
+    try {
+      mod = await importer('https://cdn.jsdelivr.net/npm/firebase@12.3.0/vertexai/dist/index.esm.js');
+    } catch (_) {
+      mod = await importer('https://unpkg.com/firebase@12.3.0/vertexai/dist/index.esm.js');
+    }
+    ({ getVertexAI, getGenerativeModel, HarmBlockThreshold, HarmCategory } = mod);
   } catch (err) {
-    console.error('Dynamic import of firebase/vertexai failed. Move Vertex AI calls to server-side.');
+    console.error('Dynamic import of firebase VertexAI SDK failed. Move Vertex AI calls to server-side.', err);
     throw err;
   }
-
-  const { getVertexAI, getGenerativeModel, HarmBlockThreshold, HarmCategory } = vertexModule;
 
   const generationConfig = options?.generationConfig || {
     temperature: 1,
@@ -86,6 +84,7 @@ export async function setFirebaseVertexModel(firebaseApp: FirebaseApp, options?:
     generationConfig,
     safetySettings,
   });
+  try { console.info('[VertexAI] Model configured:', vertexModelResource, 'location:', vertexLocation); } catch {}
 }
 
 
@@ -155,7 +154,8 @@ async function generateContentUnified(prompt: string, options?: { languageName?:
   if (!vertexModel) {
     throw new Error('Vertex model not configured. Ensure setFirebaseVertexModel(firebaseApp, options) is called during app startup.');
   }
-  const result = await vertexModel.generateContent(prompt);
+  // Send as array of parts (text) for maximum compatibility with Vertex content API
+  const result = await vertexModel.generateContent([prompt]);
   const text = await getResponseText(result);
   return text;
 }
@@ -330,3 +330,4 @@ export default {
   setFirebaseVertexModel,
   callVertexRaw,
 };
+
